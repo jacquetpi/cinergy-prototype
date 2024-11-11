@@ -1,43 +1,34 @@
-mod energy_model;
-mod rest_api;
-mod scope;
+mod monitor;
+mod model;
+mod endpoint;
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use std::env;
-use std::process;
 
-//use libvirt_interface::LibvirtInterface;
-use scope::process_interface::ProcessManager;
-use energy_model::rapl::Rapl;
+use monitor::CpuUsageTracker;
+use model::PolynomialModel;
 
-fn main() {
-    let mut rapl = Rapl::new();
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    
+    dotenv::dotenv().ok();
+    let coefficients = get_float_list("REG_COEFF");
+    println!("Loaded formula: {:?}", coefficients);
+    let model = PolynomialModel::new(coefficients);
 
-    // Launch the REST API
-    //rest_api::launch();
+    let tracker = Arc::new(Mutex::new(CpuUsageTracker::new()));
+    CpuUsageTracker::track_cpu_usage(tracker.clone()); // Start the CPU usage tracking in a separate thread
 
-    // let hypervisor_uri = "qemu:///system"; // Update this to your Hypervisor URI
-    // println!("Attempting to connect to hypervisor: '{}'", hypervisor_uri);
-    // let libvirt = match LibvirtInterface::new(&hypervisor_uri) {
-    //     Ok(conn) => conn,
-    //     Err(e) => panic!("No connection to hypervisor: {}", e),
-    // };
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    println!("Starting server on port {}", port);
+    endpoint::server::run_server(tracker, model, port).await
+    
+}
 
-    let mut manager = ProcessManager::new("qemu".to_string());
-    if let Err(e) = manager.retrieve_process_pids() {
-        eprintln!("Error retrieving process PIDs: {}", e);
-        process::exit(1);
-    }
-    manager.display_process_infos();
-    manager.display_cpu_usage_between_children();
-
-    // Simulate a call to read power consumption
-    loop {
-        if let Ok(power) = rapl.read_power() {
-            println!("Power Consumption: {:.2} W", power);
-        } else {
-            eprintln!("Failed to read power consumption");
-        }
-        std::thread::sleep(Duration::from_secs(1)); // Adjust the sleep duration as needed
-    }
+fn get_float_list(key: &str) -> Vec<f64> {
+    let value = env::var(key).expect(&format!("{} must be set", key));
+    value
+        .split(',')
+        .map(|s| s.trim().parse::<f64>().expect("Failed to parse float"))
+        .collect()
 }
